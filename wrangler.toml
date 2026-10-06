@@ -1,0 +1,7 @@
+name = "inquisitive-interviewer"
+compatibility_date = "2024-09-23"
+pages_build_output_dir = "dist"
+
+# Optional Cloudflare Worker / Pages Functions configuration
+[vars]
+ENVIRONMENT = "production"
