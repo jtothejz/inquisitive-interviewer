@@ -39,27 +39,35 @@ Respond ONLY with a valid JSON array matching this format (no markdown formattin
 ]
 If there are no noteworthy revelations yet, return []`;
 
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${this.apiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: {
-              temperature: 0.2,
-              responseMimeType: 'application/json',
-            },
-          }),
+      const candidateModels = ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-2.0-flash'];
+      let rawText = '';
+
+      for (const model of candidateModels) {
+        try {
+          const response = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${this.apiKey}`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                contents: [{ parts: [{ text: prompt }] }],
+                generationConfig: {
+                  temperature: 0.2,
+                  responseMimeType: 'application/json',
+                },
+              }),
+            }
+          );
+
+          if (response.ok) {
+            const json = await response.json();
+            rawText = json.candidates?.[0]?.content?.parts?.[0]?.text || '';
+            if (rawText) break;
+          }
+        } catch {
+          // Fall through to next model
         }
-      );
-
-      if (!response.ok) {
-        throw new Error(`Nugget extraction HTTP error: ${response.status}`);
       }
-
-      const json = await response.json();
-      const rawText = json.candidates?.[0]?.content?.parts?.[0]?.text;
 
       if (rawText) {
         let cleanJson = rawText.trim();

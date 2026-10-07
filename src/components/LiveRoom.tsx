@@ -193,6 +193,13 @@ export const LiveRoom: React.FC<LiveRoomProps> = ({
           )}
         </div>
 
+        {/* Error message banner if any connection error occurs */}
+        {errorMessage && (
+          <div className="mb-2 p-3 rounded-xl bg-red-500/15 border border-red-500/40 text-red-200 text-xs flex items-center justify-between gap-3 animate-fadeIn">
+            <span className="leading-snug">⚠️ {errorMessage}</span>
+          </div>
+        )}
+
         {/* Live Scrolling Transcript Feed */}
         <div className="flex-1 min-h-[220px] max-h-[360px] overflow-y-auto glass-panel rounded-2xl p-4 my-2 space-y-3.5 border border-slate-800/80 shadow-inner">
           {turns.length === 0 ? (

@@ -43,10 +43,12 @@ export class GeminiLiveService {
 
   private candidateModels = [
     'models/gemini-2.0-flash-exp',
+    'models/gemini-3.8-live',
     'models/gemini-2.0-flash-realtime-exp',
   ];
   private candidateIndex = 0;
   private currentApiKey = '';
+  private hasKickoffBeenSent = false;
 
   public async startSession(
     apiKey: string,
@@ -58,14 +60,14 @@ export class GeminiLiveService {
     this.config = config;
     this.allPersonas = allPersonas;
     this.candidateIndex = 0;
+    this.hasKickoffBeenSent = false;
 
     if (modelName) {
       this.candidateModels = [
         modelName,
-        'models/gemini-3.6-flash',
-        'models/gemini-3.5-transcribe-live',
-        'models/gemini-3.5-flash',
-        'models/gemini-2.5-flash',
+        'models/gemini-2.0-flash-exp',
+        'models/gemini-3.8-live',
+        'models/gemini-2.0-flash-realtime-exp',
       ].filter((v, i, a) => a.indexOf(v) === i);
     }
     this.liveModel = this.candidateModels[0];
@@ -81,8 +83,8 @@ export class GeminiLiveService {
     this.callbacks.onStatusChange('connecting');
 
     try {
-      // Initialize PCM Player and Microphone asynchronously (never block WebSocket handshake)
-      this.pcmPlayer.init().catch((e) => console.warn('[GeminiLive] PCM Player init note:', e));
+      // Initialize PCM Player and Microphone (unmuted during user gesture)
+      await this.pcmPlayer.init().catch((e) => console.warn('[GeminiLive] PCM Player init note:', e));
       this.audioRecorder.start().catch((e) => console.warn('[GeminiLive] Audio recorder start note:', e));
 
       const host = 'generativelanguage.googleapis.com';
@@ -265,11 +267,12 @@ Initiate the live panel now by having one of the panelists fire the opening hook
   private sendSessionSetup(): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 
+    this.hasKickoffBeenSent = false;
     const { prompt, voiceName } = this.buildSystemPrompt();
 
     const setupMessage = {
       setup: {
-        model: this.liveModel || 'models/gemini-3.6-flash',
+        model: this.liveModel || 'models/gemini-2.0-flash-exp',
         generationConfig: {
           responseModalities: ['AUDIO'],
           speechConfig: {
@@ -280,6 +283,7 @@ Initiate the live panel now by having one of the panelists fire the opening hook
             },
           },
         },
+        outputAudioTranscription: {},
         systemInstruction: {
           parts: [
             {
@@ -290,16 +294,22 @@ Initiate the live panel now by having one of the panelists fire the opening hook
       },
     };
 
+    console.log('[GeminiLive] Sending session setup message for model:', this.liveModel, 'with voice:', voiceName);
     this.ws.send(JSON.stringify(setupMessage));
 
-    // Send immediate kickoff trigger so interviewer speaks the opening hook right away
+    // Fallback: If server does not send an explicit setupComplete frame within 2500ms, trigger kickoff
     setTimeout(() => {
-      this.sendKickoffTrigger();
-    }, 400);
+      if (!this.hasKickoffBeenSent && this.ws && this.ws.readyState === WebSocket.OPEN) {
+        console.log('[GeminiLive] Fallback trigger check after setup');
+        this.sendKickoffTrigger();
+      }
+    }, 2500);
   }
 
   public sendKickoffTrigger(): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (this.hasKickoffBeenSent) return;
+    this.hasKickoffBeenSent = true;
 
     const kickoffMessage = {
       clientContent: {
@@ -317,6 +327,7 @@ Initiate the live panel now by having one of the panelists fire the opening hook
       },
     };
 
+    console.log('[GeminiLive] Firing opening hook kickoff trigger');
     this.ws.send(JSON.stringify(kickoffMessage));
   }
 
@@ -417,6 +428,12 @@ Initiate the live panel now by having one of the panelists fire the opening hook
           this.pcmPlayer.flush();
           this.callbacks.onActiveSpeakerChange(null);
           return;
+        }
+
+        // Real-time live text transcription chunks if available
+        const liveTranscript = msg.serverContent.outputTranscription?.text || msg.serverContent.outputAudioTranscription?.text;
+        if (liveTranscript) {
+          this.handleIncomingText(liveTranscript);
         }
 
         if (modelTurn && modelTurn.parts) {

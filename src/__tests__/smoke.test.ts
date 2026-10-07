@@ -218,4 +218,53 @@ describe('Anti-Slop Smoke Test Suite: Critical User Journeys & State Machines', 
     const turn5FollowUp = (sim as any).generateFollowUp(barbaro, 'The LLM hallucinated wrong refund amounts', false, [], 5, 'thesis_discovery');
     expect(turn5FollowUp).toContain('Critics reading your article');
   });
+
+  it('GeminiNeuralTTS generates valid WAV headers from raw PCM', async () => {
+    const { GeminiNeuralTTS } = await import('../audio/gemini-neural-tts');
+    const tts = new GeminiNeuralTTS('test-key');
+
+    // Test PCM to WAV header wrapper
+    const dummyPcm = new Uint8Array(48000); // 1 second of 24kHz 16-bit mono
+    const wavBuffer = (tts as any).wrapPcmWithWavHeader(dummyPcm, 24000, 1);
+    expect(wavBuffer.byteLength).toBe(48000 + 44);
+
+    const view = new DataView(wavBuffer);
+    const riff = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
+    expect(riff).toBe('RIFF');
+
+    const wave = String.fromCharCode(view.getUint8(8), view.getUint8(9), view.getUint8(10), view.getUint8(11));
+    expect(wave).toBe('WAVE');
+
+    // Sample rate check (24000)
+    expect(view.getUint32(24, true)).toBe(24000);
+  });
+
+  it('GeminiLiveService builds valid setup message with outputAudioTranscription', async () => {
+    const { GeminiLiveService } = await import('../services/gemini-live');
+    const service = new GeminiLiveService({
+      onStatusChange: () => {},
+      onActiveSpeakerChange: () => {},
+      onTranscriptUpdate: () => {},
+      onError: () => {},
+      onInputLevel: () => {},
+      onOutputLevel: () => {},
+    });
+
+    (service as any).config = {
+      mode: 'single',
+      primaryPersonaId: 'gonzo_hunter',
+      panelPersonaIds: ['gonzo_hunter'],
+      topic: 'Why LLMs are overused for automations',
+      dossier: '',
+      intensity: 'balanced',
+      interviewGoal: 'thesis_discovery',
+      autoExtractNuggets: true,
+    };
+    (service as any).allPersonas = INITIAL_PERSONAS;
+
+    const { prompt, voiceName } = (service as any).buildSystemPrompt();
+    expect(voiceName).toBe('Fenrir');
+    expect(prompt).toContain('Hunter S. Thompson');
+    expect(prompt).toContain('PHASE 1: GENESIS');
+  });
 });

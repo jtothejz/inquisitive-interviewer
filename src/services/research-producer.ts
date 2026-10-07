@@ -118,74 +118,83 @@ ${notes ? `ADDITIONAL SOURCE NOTES & BACKGROUND:\n${notes}` : ''}`;
     let responseText = '';
     const groundingSources: GroundingSource[] = [];
 
+    const candidateModels = ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-2.0-flash'];
+
     // Attempt 1: Call with Google Search tool
-    try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`;
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [
-            {
-              role: 'user',
-              parts: [{ text: `${systemInstructions}\n\n${userPrompt}` }],
+    for (const model of candidateModels) {
+      if (responseText) break;
+      try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [
+              {
+                role: 'user',
+                parts: [{ text: `${systemInstructions}\n\n${userPrompt}` }],
+              },
+            ],
+            tools: [{ googleSearch: {} }],
+            generationConfig: {
+              temperature: 0.3,
+              maxOutputTokens: 2500,
             },
-          ],
-          tools: [{ googleSearch: {} }],
-          generationConfig: {
-            temperature: 0.3,
-            maxOutputTokens: 2500,
-          },
-        }),
-      });
+          }),
+        });
 
-      if (response.ok) {
-        const data = (await response.json()) as any;
-        const candidate = data.candidates?.[0];
-        responseText = candidate?.content?.parts?.[0]?.text || '';
+        if (response.ok) {
+          const data = (await response.json()) as any;
+          const candidate = data.candidates?.[0];
+          responseText = candidate?.content?.parts?.[0]?.text || '';
 
-        const searchChunks = candidate?.groundingMetadata?.groundingChunks || [];
-        for (const chunk of searchChunks) {
-          if (chunk.web?.uri && chunk.web?.title) {
-            groundingSources.push({
-              title: chunk.web.title,
-              url: chunk.web.uri,
-            });
+          const searchChunks = candidate?.groundingMetadata?.groundingChunks || [];
+          for (const chunk of searchChunks) {
+            if (chunk.web?.uri && chunk.web?.title) {
+              groundingSources.push({
+                title: chunk.web.title,
+                url: chunk.web.uri,
+              });
+            }
           }
         }
+      } catch {
+        // Fall through to next model
       }
-    } catch {
-      // Fall through to JSON mode
     }
 
     // Attempt 2: Direct call with responseMimeType: 'application/json' if search grounding did not output text
     if (!responseText) {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`;
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [
-            {
-              role: 'user',
-              parts: [{ text: `${systemInstructions}\n\n${userPrompt}` }],
-            },
-          ],
-          generationConfig: {
-            temperature: 0.3,
-            responseMimeType: 'application/json',
-            maxOutputTokens: 2500,
-          },
-        }),
-      });
+      for (const model of candidateModels) {
+        if (responseText) break;
+        try {
+          const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+          const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [
+                {
+                  role: 'user',
+                  parts: [{ text: `${systemInstructions}\n\n${userPrompt}` }],
+                },
+              ],
+              generationConfig: {
+                temperature: 0.3,
+                responseMimeType: 'application/json',
+                maxOutputTokens: 2500,
+              },
+            }),
+          });
 
-      if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(`Gemini API Error (${response.status}): ${errText}`);
+          if (response.ok) {
+            const data = (await response.json()) as any;
+            responseText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+          }
+        } catch {
+          // Fall through to next model
+        }
       }
-
-      const data = (await response.json()) as any;
-      responseText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
     }
 
     // Clean and parse the response

@@ -1,6 +1,7 @@
 import { Persona, InterviewConfig, TranscriptTurn, JuicyNugget } from '../types/persona';
 import { ISpeechRecognition, SpeechRecognitionErrorEvent, SpeechRecognitionEvent } from '../types/speech';
 import { ResearchProducerService } from './research-producer';
+import { GeminiNeuralTTS } from '../audio/gemini-neural-tts';
 
 export interface RestVoiceCallbacks {
   onStatusChange: (status: 'disconnected' | 'connecting' | 'connected' | 'error') => void;
@@ -22,11 +23,14 @@ export class GeminiRestVoiceService {
   private synthesisVoice: SpeechSynthesisVoice | null = null;
   private config: InterviewConfig | null = null;
   private allPersonas: Persona[] = [];
+  private neuralTTS: GeminiNeuralTTS;
 
   constructor(
     private apiKey: string,
     private callbacks: RestVoiceCallbacks
-  ) {}
+  ) {
+    this.neuralTTS = new GeminiNeuralTTS(apiKey);
+  }
 
   public setMuted(muted: boolean): void {
     this.isMuted = muted;
@@ -406,26 +410,37 @@ ${phaseGuidance}
   }
 
   private async callGemini(prompt: string): Promise<string> {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${this.apiKey}`;
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.7,
-          maxOutputTokens: 1500,
-        },
-      }),
-    });
+    const candidateModels = ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-2.0-flash'];
+    let lastError: Error | null = null;
 
-    if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`Gemini API Error (${res.status}): ${err}`);
+    for (const model of candidateModels) {
+      try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${this.apiKey}`;
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: {
+              temperature: 0.7,
+              maxOutputTokens: 1500,
+            },
+          }),
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || 'Please tell me more about that.';
+        } else {
+          const err = await res.text();
+          lastError = new Error(`Gemini API Error on ${model} (${res.status}): ${err}`);
+        }
+      } catch (e) {
+        lastError = e instanceof Error ? e : new Error(String(e));
+      }
     }
 
-    const data = await res.json();
-    return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || 'Please tell me more about that.';
+    throw lastError || new Error('All Gemini text generation candidates failed.');
   }
 
   private parseMultiSpeakerTurns(
@@ -527,6 +542,47 @@ ${phaseGuidance}
       }
     }
 
+    // Attempt Gemini Neural Voice first (natural human voice)
+    const persona = currentTurn.speakerPersona;
+    const voiceName = persona.voice_name || 'Fenrir';
+
+    this.neuralTTS
+      .speak(
+        currentTurn.text,
+        voiceName,
+        (level) => {
+          this.callbacks.onAudioLevel(level);
+        },
+        () => {
+          if (remaining.length > 0) {
+            setTimeout(() => {
+              if (this.isRunning) {
+                this.playQueuedTurns(remaining, onComplete);
+              }
+            }, 300);
+          } else {
+            this.callbacks.onActiveSpeakerChange(null);
+            setTimeout(() => {
+              this.isAiSpeaking = false;
+              if (this.isRunning) {
+                this.startListening();
+              }
+              onComplete?.();
+            }, 500);
+          }
+        }
+      )
+      .catch((err) => {
+        console.warn('[RestVoice] Neural TTS error, falling back to browser speech:', err);
+        this.fallbackBrowserSpeak(currentTurn, remaining, onComplete);
+      });
+  }
+
+  private fallbackBrowserSpeak(
+    currentTurn: { speakerPersona: Persona; text: string },
+    remaining: Array<{ speakerPersona: Persona; text: string }>,
+    onComplete?: () => void
+  ): void {
     this.startAudioAnimation();
 
     if ('speechSynthesis' in window) {
@@ -586,7 +642,6 @@ ${phaseGuidance}
 
       utterance.onend = () => {
         if (remaining.length > 0) {
-          // Play next panelist turn after brief conversational pause
           setTimeout(() => {
             if (this.isRunning) {
               this.playQueuedTurns(remaining, onComplete);
@@ -595,7 +650,6 @@ ${phaseGuidance}
         } else {
           this.stopAudioAnimation();
           this.callbacks.onActiveSpeakerChange(null);
-          // Wait 500ms grace period after panel finishes speaking before re-arming mic
           setTimeout(() => {
             this.isAiSpeaking = false;
             if (this.isRunning) {
@@ -663,6 +717,7 @@ ${phaseGuidance}
   public stop(): TranscriptTurn[] {
     this.isRunning = false;
     this.stopAudioAnimation();
+    this.neuralTTS.stop();
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
     }

@@ -87,7 +87,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               onChange={(e) => setSelectedModel(e.target.value)}
               className="w-full bg-surface-100 border border-slate-800 rounded-xl px-3.5 py-2 text-slate-100 focus:outline-none focus:border-orange-500 font-mono"
             >
-              <option value="models/gemini-2.0-flash-exp">models/gemini-2.0-flash-exp (Gemini Multimodal Live Voice)</option>
+              <option value="models/gemini-2.0-flash-exp">models/gemini-2.0-flash-exp (Gemini Multimodal Live Voice - Recommended)</option>
+              <option value="models/gemini-3.8-live">models/gemini-3.8-live (Gemini 3.8 Live Neural Studio)</option>
               <option value="models/gemini-2.0-flash-realtime-exp">models/gemini-2.0-flash-realtime-exp (Gemini Realtime Live Audio)</option>
             </select>
           </div>

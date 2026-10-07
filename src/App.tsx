@@ -102,50 +102,18 @@ export const App: React.FC = () => {
         onAudioLevel: (level) => setOutputLevel(level),
       });
       simServiceRef.current = sim;
-      sim.start(config, allPersonas);
+      sim.start(config, allPersonas, apiKey);
     } else {
       nuggetExtractorRef.current = new NuggetExtractorService(apiKey, (newNuggets) => {
         setNuggets(newNuggets);
       });
 
-      // Prepare Fast REST Voice fallback
-      let restVoiceStarted = false;
-      const startRestVoice = () => {
-        if (restVoiceStarted || !isLiveSessionActiveRef.current) return;
-        restVoiceStarted = true;
-        console.log('[App] Starting Gemini Fast Voice Engine');
-        if (liveServiceRef.current) {
-          liveServiceRef.current.endSession();
-          liveServiceRef.current = null;
-        }
-        const restVoice = new GeminiRestVoiceService(apiKey, {
-          onStatusChange: (status: 'disconnected' | 'connecting' | 'connected' | 'error') => setConnectionStatus(status),
-          onActiveSpeakerChange: (speakerId: string | 'user' | null) => setActiveSpeakerId(speakerId),
-          onTranscriptUpdate: (updatedTurns: TranscriptTurn[]) => {
-            setTurns(updatedTurns);
-            if (config.autoExtractNuggets && nuggetExtractorRef.current) {
-              nuggetExtractorRef.current.analyzeRecentTurns(updatedTurns);
-            }
-          },
-          onNewNugget: (newNugget: JuicyNugget) => setNuggets((prev) => [...prev, newNugget]),
-          onAudioLevel: (level: number) => setOutputLevel(level),
-          onError: (err: string) => setErrorMessage(err),
-        });
-        restVoiceRef.current = restVoice;
-        restVoice.startSession(config, allPersonas);
-      };
-
-      let liveTurnReceived = false;
       const liveService = new GeminiLiveService({
         onStatusChange: (status) => {
           setConnectionStatus(status);
-          if (status === 'error' && !liveTurnReceived) {
-            startRestVoice();
-          }
         },
         onActiveSpeakerChange: (speakerId) => setActiveSpeakerId(speakerId),
         onTranscriptUpdate: (updatedTurns) => {
-          liveTurnReceived = true;
           setTurns(updatedTurns);
           if (config.autoExtractNuggets && nuggetExtractorRef.current) {
             nuggetExtractorRef.current.analyzeRecentTurns(updatedTurns);
@@ -153,9 +121,7 @@ export const App: React.FC = () => {
         },
         onError: (err) => {
           console.warn('[GeminiLive Error]', err);
-          if (!liveTurnReceived) {
-            startRestVoice();
-          }
+          setErrorMessage(err);
         },
         onInputLevel: (level) => setInputLevel(level),
         onOutputLevel: (level) => setOutputLevel(level),
@@ -164,18 +130,12 @@ export const App: React.FC = () => {
       liveServiceRef.current = liveService;
       try {
         await liveService.startSession(apiKey, config, allPersonas, liveModel);
-      } catch (e) {
-        console.warn('[GeminiLive start failed, switching to Fast Voice]', e);
-        startRestVoice();
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn('[GeminiLive start failed]', e);
+        setErrorMessage(`Live Voice Studio failed: ${msg}`);
+        setConnectionStatus('error');
       }
-
-      // Safety fallback: If WebSocket does not produce an opening question within 3.5s, activate Fast Voice
-      setTimeout(() => {
-        if (!liveTurnReceived && isLiveSessionActiveRef.current && !restVoiceStarted) {
-          console.log('[App] WebSocket timeout, switching to Gemini Fast Voice Engine');
-          startRestVoice();
-        }
-      }, 3500);
     }
   };
 

@@ -1,4 +1,5 @@
 import { Persona, InterviewConfig, TranscriptTurn, JuicyNugget } from '../types/persona';
+import { GeminiNeuralTTS } from '../audio/gemini-neural-tts';
 
 export interface SimulationCallbacks {
   onStatusChange: (status: 'disconnected' | 'connecting' | 'connected' | 'error') => void;
@@ -14,13 +15,19 @@ export class SimulationService {
   private currentTurnIndex = 0;
   private timer: number | null = null;
   private animInterval: number | null = null;
+  private neuralTTS: GeminiNeuralTTS | null = null;
+  private apiKey = '';
 
   constructor(private callbacks: SimulationCallbacks) {}
 
-  public start(config: InterviewConfig, personas: Persona[]): void {
+  public start(config: InterviewConfig, personas: Persona[], apiKey?: string): void {
     this.isRunning = true;
     this.turns = [];
     this.currentTurnIndex = 0;
+    this.apiKey = apiKey || '';
+    if (this.apiKey) {
+      this.neuralTTS = new GeminiNeuralTTS(this.apiKey);
+    }
     this.callbacks.onStatusChange('connecting');
 
     setTimeout(() => {
@@ -267,6 +274,42 @@ export class SimulationService {
     this.callbacks.onTranscriptUpdate([...this.turns]);
     this.callbacks.onActiveSpeakerChange(currentTurn.speakerPersona.id);
 
+    // If API key is available, use real Gemini Neural TTS
+    if (this.neuralTTS && this.apiKey) {
+      const voiceName = currentTurn.speakerPersona.voice_name || 'Fenrir';
+      this.neuralTTS
+        .speak(
+          currentTurn.text,
+          voiceName,
+          (level) => this.callbacks.onAudioLevel(level),
+          () => {
+            if (remaining.length > 0) {
+              setTimeout(() => {
+                if (this.isRunning) {
+                  this.playQueuedTurns(remaining, onComplete);
+                }
+              }, 300);
+            } else {
+              this.callbacks.onActiveSpeakerChange(null);
+              onComplete?.();
+            }
+          }
+        )
+        .catch((err) => {
+          console.warn('[SimulationService] Neural TTS error, falling back to browser synthesis:', err);
+          this.fallbackBrowserSpeak(currentTurn, remaining, onComplete);
+        });
+      return;
+    }
+
+    this.fallbackBrowserSpeak(currentTurn, remaining, onComplete);
+  }
+
+  private fallbackBrowserSpeak(
+    currentTurn: { speakerPersona: Persona; text: string },
+    remaining: Array<{ speakerPersona: Persona; text: string }>,
+    onComplete?: () => void
+  ): void {
     this.startSimulatedAudio();
 
     if ('speechSynthesis' in window) {
@@ -371,6 +414,7 @@ export class SimulationService {
     this.isRunning = false;
     if (this.timer) clearTimeout(this.timer);
     this.stopSimulatedAudio();
+    this.neuralTTS?.stop();
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
     }

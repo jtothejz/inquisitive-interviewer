@@ -64,27 +64,7 @@ ${customInstructions ? `Additional Director Request: ${customInstructions}` : ''
 
 Deliver the complete, polished narrative draft now in full markdown format.`;
 
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${this.apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: systemPrompt }] }],
-          generationConfig: {
-            temperature: 0.7,
-          },
-        }),
-      }
-    );
-
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`Gemini synthesis API error (${response.status}): ${errText}`);
-    }
-
-    const data = await response.json();
-    const draftText = data.candidates?.[0]?.content?.parts?.[0]?.text || 'No output generated.';
+    const draftText = await this.callGemini(systemPrompt, 0.7);
 
     return {
       formatId: `draft-${persona.id}-${Date.now()}`,
@@ -127,26 +107,7 @@ Organize into:
 Raw Transcript:
 ${formattedTranscript}`;
 
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${this.apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.5,
-          },
-        }),
-      }
-    );
-
-    if (!response.ok) {
-      throw new Error(`Quotes deck synthesis error (${response.status})`);
-    }
-
-    const data = await response.json();
-    const draftText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    const draftText = await this.callGemini(prompt, 0.5);
 
     return {
       formatId: `draft-quotes-${Date.now()}`,
@@ -156,6 +117,41 @@ ${formattedTranscript}`;
       content: draftText,
       createdAt: Date.now(),
     };
+  }
+
+  private async callGemini(prompt: string, temperature = 0.7): Promise<string> {
+    const candidateModels = ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-2.0-flash'];
+    let lastError: Error | null = null;
+
+    for (const model of candidateModels) {
+      try {
+        const response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${this.apiKey}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: prompt }] }],
+              generationConfig: {
+                temperature,
+              },
+            }),
+          }
+        );
+
+        if (response.ok) {
+          const data = await response.json();
+          return data.candidates?.[0]?.content?.parts?.[0]?.text || 'No output generated.';
+        } else {
+          const errText = await response.text();
+          lastError = new Error(`Gemini synthesis API error on ${model} (${response.status}): ${errText}`);
+        }
+      } catch (e) {
+        lastError = e instanceof Error ? e : new Error(String(e));
+      }
+    }
+
+    throw lastError || new Error('All Gemini synthesis model candidates failed.');
   }
 
   private generateSimulatedDraft(
