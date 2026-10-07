@@ -38,7 +38,10 @@ export class PCMPlayer {
    * Feed base64-encoded PCM or ArrayBuffer/Int16Array into audio playback queue
    */
   public feed(chunk: ArrayBuffer | Uint8Array | string): void {
-    if (!this.audioContext || !this.gainNode) return;
+    if (!this.audioContext || !this.gainNode) {
+      this.init().catch(() => {});
+      if (!this.audioContext || !this.gainNode) return;
+    }
 
     if (this.audioContext.state === 'suspended') {
       this.audioContext.resume().catch(() => {});

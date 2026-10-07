@@ -283,7 +283,6 @@ Initiate the live panel now by having one of the panelists fire the opening hook
             },
           },
         },
-        outputAudioTranscription: {},
         systemInstruction: {
           parts: [
             {
@@ -297,13 +296,13 @@ Initiate the live panel now by having one of the panelists fire the opening hook
     console.log('[GeminiLive] Sending session setup message for model:', this.liveModel, 'with voice:', voiceName);
     this.ws.send(JSON.stringify(setupMessage));
 
-    // Fallback: If server does not send an explicit setupComplete frame within 2500ms, trigger kickoff
+    // Fallback: If server does not send an explicit setupComplete frame within 1500ms, trigger kickoff
     setTimeout(() => {
       if (!this.hasKickoffBeenSent && this.ws && this.ws.readyState === WebSocket.OPEN) {
         console.log('[GeminiLive] Fallback trigger check after setup');
         this.sendKickoffTrigger();
       }
-    }, 2500);
+    }, 1500);
   }
 
   public sendKickoffTrigger(): void {
@@ -439,7 +438,7 @@ Initiate the live panel now by having one of the panelists fire the opening hook
         if (modelTurn && modelTurn.parts) {
           for (const part of modelTurn.parts) {
             // Audio Chunks
-            if (part.inlineData && part.inlineData.mimeType?.startsWith('audio/pcm')) {
+            if (part.inlineData && (part.inlineData.mimeType?.includes('audio') || part.inlineData.mimeType?.includes('pcm'))) {
               this.pcmPlayer.feed(part.inlineData.data);
               if (!this.currentSpeakerId) {
                 this.currentSpeakerId = this.config?.mode === 'single' ? this.config.primaryPersonaId : (this.allPersonas[0]?.id || 'interviewer');
@@ -532,6 +531,10 @@ Initiate the live panel now by having one of the panelists fire the opening hook
     this.callbacks.onActiveSpeakerChange(null);
     this.callbacks.onInputLevel(0);
     this.callbacks.onOutputLevel(0);
+  }
+
+  public isOpen(): boolean {
+    return this.ws !== null && this.ws.readyState === WebSocket.OPEN;
   }
 
   public endSession(): TranscriptTurn[] {

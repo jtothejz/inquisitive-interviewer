@@ -50,7 +50,7 @@ export class SimulationService {
         config.interviewGoal
       );
       this.playQueuedTurns([{ speakerPersona: firstSpeaker, text: openingQuestion }]);
-    }, 800);
+    }, 400);
   }
 
   private getOpeningHook(

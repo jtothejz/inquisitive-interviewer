@@ -423,7 +423,7 @@ ${phaseGuidance}
             contents: [{ parts: [{ text: prompt }] }],
             generationConfig: {
               temperature: 0.7,
-              maxOutputTokens: 1500,
+              maxOutputTokens: 300,
             },
           }),
         });

@@ -93,6 +93,19 @@ export const App: React.FC = () => {
     isLiveSessionActiveRef.current = true;
     setActiveView('live');
 
+    // Synchronously unlock Web Audio context on user click gesture
+    const AudioContextClass =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    if (AudioContextClass) {
+      try {
+        const dummyCtx = new AudioContextClass();
+        dummyCtx.resume().then(() => dummyCtx.close()).catch(() => {});
+      } catch {
+        // Ignore
+      }
+    }
+
     if (isSimulation) {
       const sim = new SimulationService({
         onStatusChange: (status) => setConnectionStatus(status),
@@ -108,12 +121,56 @@ export const App: React.FC = () => {
         setNuggets(newNuggets);
       });
 
+      // Prepare Fast Voice Engine fallback so nobody is EVER left in silence
+      let speechInitiated = false;
+      let restVoiceStarted = false;
+
+      const activateRestVoice = (reason: string) => {
+        if (restVoiceStarted || speechInitiated || !isLiveSessionActiveRef.current) return;
+        restVoiceStarted = true;
+        console.warn(`[App] Transitioning to Gemini Voice Engine (${reason})`);
+
+        if (liveServiceRef.current) {
+          liveServiceRef.current.endSession();
+          liveServiceRef.current = null;
+        }
+
+        const restVoice = new GeminiRestVoiceService(apiKey, {
+          onStatusChange: (status: 'disconnected' | 'connecting' | 'connected' | 'error') =>
+            setConnectionStatus(status),
+          onActiveSpeakerChange: (speakerId: string | 'user' | null) =>
+            setActiveSpeakerId(speakerId),
+          onTranscriptUpdate: (updatedTurns: TranscriptTurn[]) => {
+            if (updatedTurns.length > 0) speechInitiated = true;
+            setTurns(updatedTurns);
+            if (config.autoExtractNuggets && nuggetExtractorRef.current) {
+              nuggetExtractorRef.current.analyzeRecentTurns(updatedTurns);
+            }
+          },
+          onNewNugget: (newNugget: JuicyNugget) => setNuggets((prev) => [...prev, newNugget]),
+          onAudioLevel: (level: number) => setOutputLevel(level),
+          onError: (err: string) => {
+            console.warn('[RestVoice Error]', err);
+            setErrorMessage(err);
+          },
+        });
+        restVoiceRef.current = restVoice;
+        restVoice.startSession(config, allPersonas);
+      };
+
       const liveService = new GeminiLiveService({
         onStatusChange: (status) => {
           setConnectionStatus(status);
+          if (status === 'error' && !speechInitiated) {
+            activateRestVoice('WebSocket entered error state');
+          }
         },
-        onActiveSpeakerChange: (speakerId) => setActiveSpeakerId(speakerId),
+        onActiveSpeakerChange: (speakerId) => {
+          if (speakerId) speechInitiated = true;
+          setActiveSpeakerId(speakerId);
+        },
         onTranscriptUpdate: (updatedTurns) => {
+          if (updatedTurns.length > 0) speechInitiated = true;
           setTurns(updatedTurns);
           if (config.autoExtractNuggets && nuggetExtractorRef.current) {
             nuggetExtractorRef.current.analyzeRecentTurns(updatedTurns);
@@ -121,21 +178,34 @@ export const App: React.FC = () => {
         },
         onError: (err) => {
           console.warn('[GeminiLive Error]', err);
-          setErrorMessage(err);
+          if (!speechInitiated) {
+            activateRestVoice(`WebSocket error: ${err}`);
+          } else {
+            setErrorMessage(err);
+          }
         },
         onInputLevel: (level) => setInputLevel(level),
-        onOutputLevel: (level) => setOutputLevel(level),
+        onOutputLevel: (level) => {
+          if (level > 0.02) speechInitiated = true;
+          setOutputLevel(level);
+        },
       });
 
       liveServiceRef.current = liveService;
       try {
         await liveService.startSession(apiKey, config, allPersonas, liveModel);
       } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        console.warn('[GeminiLive start failed]', e);
-        setErrorMessage(`Live Voice Studio failed: ${msg}`);
-        setConnectionStatus('error');
+        console.warn('[GeminiLive startSession threw, activating voice fallback]', e);
+        activateRestVoice('startSession threw exception');
       }
+
+      // Safety watchdog: If WebSocket does not produce an opening question within 3.5s, activate Fast Voice
+      setTimeout(() => {
+        if (!speechInitiated && !restVoiceStarted && isLiveSessionActiveRef.current) {
+          console.warn('[App] WebSocket liveness watchdog fired after 3.5s without speech, switching to Fast Voice');
+          activateRestVoice('Watchdog timeout: no speech received within 3.5s');
+        }
+      }, 3500);
     }
   };
 
@@ -144,8 +214,27 @@ export const App: React.FC = () => {
       simServiceRef.current?.handleUserMessage(`[DIRECTOR NOTE]: ${directive}`, interviewConfig!, allPersonas);
     } else if (restVoiceRef.current) {
       restVoiceRef.current.handleUserAnswer(`[DIRECTOR NOTE]: ${directive}`, interviewConfig!, allPersonas);
+    } else if (liveServiceRef.current && liveServiceRef.current.isOpen()) {
+      liveServiceRef.current.sendSteeringDirective(directive);
     } else {
-      liveServiceRef.current?.sendSteeringDirective(directive);
+      console.warn('[App] Directive sent while live service closed, activating rest voice');
+      if (interviewConfig) {
+        const restVoice = new GeminiRestVoiceService(apiKey, {
+          onStatusChange: (status) => setConnectionStatus(status),
+          onActiveSpeakerChange: (speakerId) => setActiveSpeakerId(speakerId),
+          onTranscriptUpdate: (updatedTurns) => {
+            setTurns(updatedTurns);
+            if (interviewConfig.autoExtractNuggets && nuggetExtractorRef.current) {
+              nuggetExtractorRef.current.analyzeRecentTurns(updatedTurns);
+            }
+          },
+          onNewNugget: (newNugget) => setNuggets((prev) => [...prev, newNugget]),
+          onAudioLevel: (level) => setOutputLevel(level),
+          onError: (err) => setErrorMessage(err),
+        });
+        restVoiceRef.current = restVoice;
+        restVoice.startSession(interviewConfig, allPersonas);
+      }
     }
   };
 

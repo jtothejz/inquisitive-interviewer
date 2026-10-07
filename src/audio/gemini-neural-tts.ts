@@ -121,89 +121,32 @@ export class GeminiNeuralTTS {
   }
 
   /**
-   * Fetches natural audio from Gemini using available endpoints
+   * Fetches natural audio from Gemini using available TTS and Audio models
    */
   private async fetchNeuralAudio(text: string, voiceName: string): Promise<AudioBuffer> {
-    // Strategy 1: Dedicated Interactions API with gemini-3.8-flash-tts
-    try {
-      const audioData = await this.tryInteractionsTTS(text, voiceName);
-      if (audioData) {
-        return await this.decodeAudio(audioData);
-      }
-    } catch (e) {
-      console.warn('[GeminiNeuralTTS] Interactions TTS attempt failed, falling back to generateContent:', e);
-    }
+    const candidateModels = [
+      'gemini-3.8-flash-tts',
+      'gemini-3.8-flash-lite-tts',
+      'gemini-2.5-flash-native-audio-latest',
+      'gemini-2.0-flash-exp',
+      'gemini-2.0-flash',
+    ];
 
-    // Strategy 2: generateContent with AUDIO response modality on gemini-2.0-flash
-    try {
-      const audioData = await this.tryGenerateContentAudio('gemini-2.0-flash', text, voiceName);
-      if (audioData) {
-        return await this.decodeAudio(audioData);
-      }
-    } catch (e) {
-      console.warn('[GeminiNeuralTTS] gemini-2.0-flash audio attempt failed:', e);
-    }
+    let lastError: Error | null = null;
 
-    // Strategy 3: generateContent with AUDIO response modality on gemini-3.8-flash
-    try {
-      const audioData = await this.tryGenerateContentAudio('gemini-3.8-flash', text, voiceName);
-      if (audioData) {
-        return await this.decodeAudio(audioData);
-      }
-    } catch (e) {
-      console.warn('[GeminiNeuralTTS] gemini-3.8-flash audio attempt failed:', e);
-    }
-
-    throw new Error('All Gemini neural voice generation endpoints failed.');
-  }
-
-  private async tryInteractionsTTS(text: string, voiceName: string): Promise<string | null> {
-    const url = `https://generativelanguage.googleapis.com/v1beta/interactions?key=${this.apiKey}`;
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'gemini-3.8-flash-tts',
-        input: [
-          {
-            type: 'user_input',
-            content: [
-              {
-                type: 'text',
-                text: text,
-              },
-            ],
-          },
-        ],
-        response_format: {
-          type: 'audio',
-        },
-        generation_config: {
-          speech_config: [
-            {
-              voice: voiceName,
-            },
-          ],
-        },
-      }),
-    });
-
-    if (!res.ok) return null;
-
-    const data = await res.json();
-    // In Interactions API, base64 audio is in steps[].content[].data
-    if (Array.isArray(data.steps)) {
-      for (const step of data.steps) {
-        if (step.content && Array.isArray(step.content)) {
-          for (const item of step.content) {
-            if (item.type === 'audio' && item.data) {
-              return item.data;
-            }
-          }
+    for (const model of candidateModels) {
+      try {
+        const audioBase64 = await this.tryGenerateContentAudio(model, text, voiceName);
+        if (audioBase64) {
+          return await this.decodeAudio(audioBase64);
         }
+      } catch (e) {
+        lastError = e instanceof Error ? e : new Error(String(e));
+        console.warn(`[GeminiNeuralTTS] Model ${model} audio attempt failed:`, e);
       }
     }
-    return null;
+
+    throw lastError || new Error('All Gemini neural voice generation endpoints failed.');
   }
 
   private async tryGenerateContentAudio(
@@ -239,7 +182,9 @@ export class GeminiNeuralTTS {
       }),
     });
 
-    if (!res.ok) return null;
+    if (!res.ok) {
+      return null;
+    }
 
     const data = await res.json();
     const candidate = data.candidates?.[0];
@@ -255,10 +200,13 @@ export class GeminiNeuralTTS {
   }
 
   /**
-   * Decodes either RIFF WAV base64 or raw 24kHz PCM base64 into a playable AudioBuffer
+   * Decodes RIFF WAV, MP3, or raw PCM into a playable AudioBuffer
    */
   private async decodeAudio(base64Data: string): Promise<AudioBuffer> {
     const ctx = this.initAudioContext();
+    if (ctx.state === 'suspended') {
+      await ctx.resume().catch(() => {});
+    }
     const binary = atob(base64Data);
     const len = binary.length;
     const bytes = new Uint8Array(len);
@@ -266,23 +214,29 @@ export class GeminiNeuralTTS {
       bytes[i] = binary.charCodeAt(i);
     }
 
-    // Check if it's already a RIFF/WAV format
-    const isWav =
-      len >= 12 &&
-      bytes[0] === 0x52 && // 'R'
-      bytes[1] === 0x49 && // 'I'
-      bytes[2] === 0x46 && // 'F'
-      bytes[3] === 0x46; // 'F'
-
-    let arrayBufferToDecode: ArrayBuffer;
-    if (isWav) {
-      arrayBufferToDecode = bytes.buffer;
-    } else {
-      // Raw 24kHz 16-bit mono Linear PCM: wrap with standard 44-byte WAV header
-      arrayBufferToDecode = this.wrapPcmWithWavHeader(bytes, 24000, 1);
+    // 1. Try decoding directly (works for WAV, MP3, AAC, OGG containers)
+    try {
+      const directBuffer = bytes.buffer.slice(0);
+      return await ctx.decodeAudioData(directBuffer);
+    } catch {
+      // Direct decode failed, might be raw Linear PCM
     }
 
-    return await ctx.decodeAudioData(arrayBufferToDecode);
+    // 2. Try wrapping as 24kHz 16-bit mono PCM (standard Gemini Live rate)
+    try {
+      const pcm24kBuffer = this.wrapPcmWithWavHeader(bytes, 24000, 1);
+      return await ctx.decodeAudioData(pcm24kBuffer);
+    } catch {
+      // Direct decode failed, try 16kHz
+    }
+
+    // 3. Try wrapping as 16kHz 16-bit mono PCM
+    try {
+      const pcm16kBuffer = this.wrapPcmWithWavHeader(bytes, 16000, 1);
+      return await ctx.decodeAudioData(pcm16kBuffer);
+    } catch (err) {
+      throw new Error(`Failed to decode Gemini audio stream: ${err}`);
+    }
   }
 
   private wrapPcmWithWavHeader(

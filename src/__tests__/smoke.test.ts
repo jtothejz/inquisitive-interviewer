@@ -239,7 +239,7 @@ describe('Anti-Slop Smoke Test Suite: Critical User Journeys & State Machines', 
     expect(view.getUint32(24, true)).toBe(24000);
   });
 
-  it('GeminiLiveService builds valid setup message with outputAudioTranscription', async () => {
+  it('GeminiLiveService builds valid system prompt and exposes isOpen status', async () => {
     const { GeminiLiveService } = await import('../services/gemini-live');
     const service = new GeminiLiveService({
       onStatusChange: () => {},
@@ -266,5 +266,6 @@ describe('Anti-Slop Smoke Test Suite: Critical User Journeys & State Machines', 
     expect(voiceName).toBe('Fenrir');
     expect(prompt).toContain('Hunter S. Thompson');
     expect(prompt).toContain('PHASE 1: GENESIS');
+    expect(service.isOpen()).toBe(false);
   });
 });
